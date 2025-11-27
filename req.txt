@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+pdfplumber
+google-generativeai
+firebase-admin
+python-multipart
+pinecone
+sentence-transformers
+numpy
+protobuf==3.20.*
