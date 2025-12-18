@@ -1,3 +1,5 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 fastapi
 uvicorn[standard]
 pdfplumber
@@ -5,6 +7,7 @@ google-generativeai
 firebase-admin
 python-multipart
 pinecone
-sentence-transformers
+sentence-transformers==2.2.2
+torch==2.0.1+cpu
 numpy
 protobuf==3.20.*
