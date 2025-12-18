@@ -9,13 +9,14 @@ from firebase_admin import credentials, firestore
 from typing import Dict, Any
 import datetime
 import numpy as np
-
+from typing import Any
+from fastapi import Body
 # ---------- CONFIG ----------
 GEMINI_KEY = os.getenv("GEMINI_KEY", "")
 FIREBASE_CRED_PATH = os.getenv("FIREBASE_CRED_PATH", "/app/serviceAccount.json")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "")
-SMTP_EMAIL = os.getenv("SMTP_EMAIL", "")          # your gmail ID
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")    # Gmail App Password
+SMTP_EMAIL = os.getenv("SMTP_EMAIL", "")          
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")    
 
 
 if not GEMINI_KEY:
@@ -274,6 +275,88 @@ async def upload_resume(file: UploadFile = File(...)):
 def root():
     return {"status": "ok"}
 
+
+def parse_jd_with_gemini(text: str) -> Dict[str, Any]:
+    prompt = f"""
+You are a Job Description (JD) parser.
+Return JSON only. No explanations.
+
+Format:
+{{
+  "jobTitle": "",
+  "description": "",
+  "mustHaveSkills": [],
+  "goodToHaveSkills": [],
+  "minimumQualification": {{
+    "degree": [],
+    "branch": [],
+    "graduationYear": 0,
+    "minimumCGPA": 0,
+    "maximumBacklogsAllowed": 0
+  }}
+}}
+
+Extract only what exists. Leave missing values empty or 0.
+
+JD:
+{text}
+"""
+
+    model = genai.GenerativeModel("gemini-2.5-flash")
+    response = model.generate_content(prompt)
+    raw = response.text.strip()
+
+    if raw.startswith("```"):
+        raw = "\n".join(raw.split("\n")[1:-1])
+
+    return json.loads(raw)
+
+
+@app.post("/upload-jd-auto")
+async def upload_jd_auto(file: UploadFile = File(...)):
+    company = file.filename.replace(".pdf", "")
+
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+
+    body = await file.read()
+
+    # Extract JD text
+    try:
+        text = extract_resume_text_from_bytes(body)
+        if not text:
+            raise HTTPException(status_code=400, detail="PDF had no extractable text")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF parsing error: {e}")
+
+    # Parse JD using Gemini
+    try:
+        jd = parse_jd_with_gemini(text)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Gemini JD parsing error: {e}")
+
+    print("\n===== AUTO JD PARSED =====")
+    print(json.dumps(jd, indent=2))
+
+    # ---------- AUTO-TRIGGER ELIGIBILITY ----------
+    payload = {
+        "company": company,
+        "jd": jd
+    }
+
+    result = await eligibility_check(payload)
+
+    return {
+        "message": "JD processed and eligibility calculated",
+        "jd": jd,
+        "eligibility": result
+    }
+
+
+
+
+
+
 # =========================================================
 # 🔥 JD → TEXT (skills + preferred skills + description)
 # =========================================================
@@ -362,16 +445,18 @@ def send_email(to_email: str, subject: str, message_text: str):
 # =========================================================
 
 @app.post("/check-eligibility")
-async def eligibility_check(payload: Dict[str, Any]):
+async def eligibility_check(payload: Any = Body(...)):
 
-    company = payload.get("company")
-    jd = payload.get("jd")
+    if isinstance(payload, list):
+        payload = payload[0]
 
-    if not company:
-        raise HTTPException(status_code=400, detail="Company name required")
-
-    if not jd:
-        raise HTTPException(status_code=400, detail="JD JSON required")
+    company = (
+        payload.get("company") or
+        payload.get("name") or
+        payload.get("organization") or
+        "Unknown_Company"
+    )
+    jd = payload.get("jd") or payload
 
     print("\n===== ELIGIBILITY CHECK STARTED =====\n")
 
@@ -469,3 +554,8 @@ async def eligibility_check(payload: Dict[str, Any]):
 
 stats = pinecone_index.describe_index_stats()
 print("DEBUG: Pinecone index stats =", stats)
+
+@app.get("/test-email")
+def test_email():
+    send_email("your-email@gmail.com", "Test Email", "SMTP is working.")
+    return {"status": "sent"}
